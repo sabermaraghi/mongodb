@@ -1,0 +1,215 @@
+
+
+
+Source:
+192.168.15.20,192.168.15.153,192.168.15.136,192.168.15.172
+
+
+Dest:
+172.17.20.8 22,27017 SBKAlinmn1
+172.17.20.9 22,27017 SBKAlinmn2
+172.17.20.10 22,27017 SBKAlinmn3
+
+
+
+
+echo -e "172.17.20.8 SBKAlinmn1\n172.17.20.9 SBKAlinmn2\n172.17.20.10 SBKAlinmn3\n" >> /etc/hosts
+
+cd /opt
+wget https://repo.percona.com/apt/percona-release_latest.$(lsb_release -sc)_all.deb
+dpkg -i percona-release_latest.$(lsb_release -sc)_all.deb
+
+cd /opt; wget https://repo.percona.com/apt/percona-release_latest.$(lsb_release -sc)_all.deb
+dpkg -i percona-release_latest.$(lsb_release -sc)_all.deb
+percona-release enable psmdb-50 release
+apt update
+
+apt install percona-server-mongodb
+pvcreate /dev/sdb
+vgcreate vg_db /dev/sdb
+lvcreate -n lv_db -l100%FREE vg_db
+mkfs.xfs /dev/mapper/vg_db-lv_db
+blkid | grep vg_db | awk '{print $2," /data xfs defaults 0 1"}' >> /etc/fstab  && mount -a && mkdir /data && chown mongod. /data
+
+mkdir -pv /data/db /data/mongodb/keyfile  /data/mongodb/log/ /data/mongodb/audit/
+
+chown -R mongod. /data/
+
+cat > /etc/mongod.conf <<EOF
+storage:
+    dbPath: /data/db
+    journal:
+        enabled: true
+    directoryPerDB: true
+    engine: wiredTiger
+    wiredTiger:
+        engineConfig:
+             directoryForIndexes: true
+systemLog:
+    destination: file
+    logAppend: true
+    path: /data/mongodb/log/pri.log
+    logRotate: reopen
+
+processManagement:
+  timeZoneInfo: /usr/share/zoneinfo
+  fork: true
+  pidFilePath: /var/run/mongod.pid
+
+
+#operationProfiling:
+#  mode: "slowOp"
+#  slowOpThresholdMs: 50
+
+net:
+    bindIp: $(hostname -I),127.0.0.1
+    port: 27017
+    maxIncomingConnections: 2000
+
+#replication:
+#    replSetName: "rs_al"
+#    enableMajorityReadConcern: true
+
+security:
+   #authorization: enabled
+   authorization: disabled
+   #keyFile: /data/mongodb/keyfile/securekey
+EOF
+
+systemctl stop mongod
+systemctl start mongod
+
+mongo admin
+db.createUser({user:"admin",pwd:"pvGa9tMDGyiSmNoM_al",roles:["root"]});
+
+
+
+openssl rand -base64 756 > /data/mongodb/keyfile/securekey
+chmod 400 /data/mongodb/keyfile/securekey
+
+scp /data/mongodb/keyfile/securekey mongod@172.17.20.9:/data/mongodb/keyfile/securekey
+scp /data/mongodb/keyfile/securekey mongod@172.17.20.10:/data/mongodb/keyfile/securekey
+
+echo "alias mc='mongo -u admin  -p pvGa9tMDGyiSmNoM_al admin'" >> ~/.bashrc
+
+
+chown mongod. /tmp/securekey; chmod 400 /tmp/securekey
+cp -p /tmp/securekey  /data/mongodb/keyfile/securekey
+
+
+
+rs.initiate(
+   {
+      _id: "rs_al",
+      version: 1,
+      members: [
+         { _id: 0, host : "SBKAlinmn1:27017" },
+         { _id: 1, host : "SBKAlinmn2:27017" },
+         { _id: 2, host : "SBKAlinmn3:27017" }
+      ]
+   }
+);
+
+
+ufw allow from 172.17.20.8  to any port 27017
+ufw allow from 172.17.20.9  to any port 27017
+ufw allow from 172.17.20.10  to any port 27017
+
+
+ufw allow from 172.30.156.110 to any port 27017 comment "app-server_hdr-k8s-node1"
+ufw allow from 172.30.156.111 to any port 27017 comment "app-server_hdr-k8s-node2"
+ufw allow from 172.30.156.112 to any port 27017 comment "app-server_hdr-k8s-node3"
+ufw allow from 172.30.156.113 to any port 27017 comment "app-server_hdr-k8s-node4"
+ufw allow from 172.30.156.114 to any port 27017 comment "app-server_hdr-k8s-node5"
+
+db.setProfilingLevel( 2, { filter: { op: "query", millis: { $gt: 5000 } } } )
+
+
+
+
+
+use admin
+db.createUser({ user: "migration_usr" , pwd: "ceGupYukIGiw2iWG_al", roles: ["userAdminAnyDatabase", "dbAdminAnyDatabase", "readWriteAnyDatabase"]});
+ip=172.17.20.8,9,10
+user=migration_usr
+pwd=ceGupYukIGiw2iWG_al
+db=admin
+
+use superhealth
+db.createUser({user:"health_usr",pwd:"8VgJzAZbQTnXXsmC",roles:[{role:"readWrite",db:"superhealth"}]})
+
+
+ip=172.17.20.8,21,22
+user=health_usr
+pwd=8VgJzAZbQTnXXsmC
+db=superhealth
+
+
+mongodb://health_usr:8VgJzAZbQTnXXsmC@SBKAlinmn1:27017,SBKAlinmn1:27017,SBKAlinmn1:27017/superhealth?replicaSet=rhd&readPreference=secondaryPreferred&maxStalenessSeconds=90
+
+mongodb://sp_limitation_control_usr:XXXX@d-mongodb1.superpay.com.tr:27017,d-mongodb2.superpay.com.tr:27017,d-mongodb3.superpay.com.tr:27017/sp_limitation_control?readPreference=secondary
+
+
+
+SBKAlinmn1
+SBKAlinmn2
+SBKAlinmn3
+
+-------pmm
+
+telnet 172.30.146.40 443
+
+db.getSiblingDB("admin").createRole({
+    role: "explainRole",
+    privileges: [{
+        resource: {
+            db: "",
+            collection: ""
+            },
+        actions: [
+            "listIndexes",
+            "listCollections",
+            "dbStats",
+            "dbHash",
+            "collStats",
+            "find"
+            ]
+        }],
+    roles:[]
+})
+
+db.getSiblingDB("admin").createUser({
+   user: "pmm_usr",
+   pwd: "9ZyeXEq3aOk5pP9K",
+   roles: [
+      { role: "explainRole", db: "admin" },
+      { role: "clusterMonitor", db: "admin" },
+      { role: "read", db: "local" }
+   ]
+});
+
+
+apt-get update
+apt-get install -y pmm2-client
+
+pmm-agent setup --config-file="/usr/local/percona/pmm2/config/pmm-agent.yaml" \
+--server-insecure-tls --server-username=admin --server-password=f8ZGampXveMvfNwC \
+--server-address=172.30.146.40:443 --metrics-mode=push --force
+pmm-admin add mongodb --server-insecure-tls --server-url="https://admin:f8ZGampXveMvfNwC@172.30.146.40" --username=pmm_usr --password=9ZyeXEq3aOk5pP9K --replication-set=rcryptom --authentication-database=admin --service-name=HiDoctor1 --socket="/tmp/mongodb-27017.sock"
+pmm-admin add mongodb --server-insecure-tls --server-url="https://admin:f8ZGampXveMvfNwC@172.30.146.40" --username=pmm_usr --password=9ZyeXEq3aOk5pP9K --replication-set=rcryptom --authentication-database=admin --service-name=HiDoctor2 --socket="/tmp/mongodb-27017.sock"
+pmm-admin add mongodb --server-insecure-tls --server-url="https://admin:f8ZGampXveMvfNwC@172.30.146.40" --username=pmm_usr --password=9ZyeXEq3aOk5pP9K --replication-set=rcryptom --authentication-database=admin --service-name=HiDoctor3 --socket="/tmp/mongodb-27017.sock"
+
+pmm-admin remove mongodb 
+
+
+*service name*
+
+pmm-admin add mongodb --server-insecure-tls --server-url="https://admin:f8ZGampXveMvfNwC@172.30.146.40" --username=pmm_usr --password=9ZyeXEq3aOk5pP9K --replication-set=rcryptom --authentication-database=admin --service-name=Cryptom1 --socket="/tmp/mongodb-27017.sock" 
+
+
+
+mongodb://hdr_mobapp_apns_usr:SkdiLqKIEB0ExG3M@SBKAlinmn1:27017,SBKAlinmn2:27017,SBKAlinmn3:27017/hdr_mobapp_apns?replicaSet=rhd&readPreference=secondaryPreferred&maxStalenessSeconds=90
+
+mongodb://hdr_mobapp_gateway_usr:0tcwxBhwE4yV3DMF@SBKAlinmn1:27017,SBKAlinmn2:27017,SBKAlinmn3:27017/hdr_mobapp_gateway?replicaSet=rhd&readPreference=secondaryPreferred&maxStalenessSeconds=90
+
+mongodb://hdr_mobapp_smsgateway_usr:ERWclD5nqXZaQFSu@SBKAlinmn1:27017,SBKAlinmn2:27017,SBKAlinmn3:27017/hdr_mobapp_smsgateway?replicaSet=rhd&readPreference=secondaryPreferred&maxStalenessSeconds=90
